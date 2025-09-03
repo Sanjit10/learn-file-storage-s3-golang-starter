@@ -5,7 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"crypto/rand"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -31,7 +36,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
 	// TODO: implement the upload here
@@ -51,14 +55,22 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	media_type := header.Header.Get("Content-Type")
-	image_data, err := io.ReadAll(file)
+	media_type, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't read thumbnail file", err)
+		respondWithError(w, http.StatusBadRequest, "Couldn't parse media type", err)
 		return
 	}
-
-	video_metadata , err := cfg.db.GetVideo(videoID)
+	media_type_slice := strings.Split(media_type, "/")
+	if len(media_type_slice) != 2 {
+		respondWithError(w, http.StatusBadRequest, "Invalid media type format", errors.New("invalid media type format"))
+		return
+	}
+	media_type_extension := media_type_slice[1]
+	if media_type_extension != "png" && media_type_extension != "jpeg" {
+		respondWithError(w, http.StatusBadRequest, "Invalid media type format", err)
+		return
+	}
+	video_metadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't get video draft record", err)
 		return
@@ -67,11 +79,28 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized Request", errors.New("unauthorized request"))
 		return
 	}
+	randomBytes := make([]byte, 32)
+	_, err = rand.Read(randomBytes)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't generate random bytes", err)
+		return
+	}
+	randomBase64 := base64.RawURLEncoding.EncodeToString(randomBytes)
 
-	encoded_image := base64.StdEncoding.EncodeToString(image_data)
-	videoThumbnail_dataUrl := fmt.Sprintf("data:%v;base64,%v", media_type, encoded_image)
+	file_path := filepath.Join(cfg.assetsRoot, fmt.Sprintf("%v.%v", randomBase64, media_type_extension))
+	new_file, err := os.Create(file_path)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create file", err)
+		return
+	}
+	defer new_file.Close()
+	_, copyErr := io.Copy(new_file, file)
+	if copyErr != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't save thumbnail", copyErr)
+		return
+	}
 
-	video_metadata.ThumbnailURL = &videoThumbnail_dataUrl
+	video_metadata.ThumbnailURL = stringPtr(fmt.Sprintf("http://localhost:8091/assets/%v.%v", randomBase64, media_type_extension))
 
 	db_err := cfg.db.UpdateVideo(video_metadata)
 	if db_err != nil {
@@ -80,4 +109,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 
 	respondWithJSON(w, http.StatusOK, video_metadata)
+}
+
+func stringPtr(s string) *string {
+	return &s
 }
