@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"os/exec"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
@@ -117,4 +120,46 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 	}
 
 	respondWithJSON(w, http.StatusOK, videos)
+}
+
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	// Run ffprobe
+	cmd := exec.Command(
+		"ffprobe",
+		"-v", "error",
+		"-print_format", "json", 
+		"-show_streams",
+		filePath,
+	)
+
+	var stdoutBuffer bytes.Buffer
+	cmd.Stdout = &stdoutBuffer
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+
+	// Unmarshal into a generic map
+	var result map[string]any
+	if err := json.Unmarshal(stdoutBuffer.Bytes(), &result); err != nil {
+		return "", err
+	}
+
+	// Navigate JSON: ffprobe puts streams in "streams" array
+	streams, ok := result["streams"].([]any)
+	if !ok || len(streams) == 0 {
+		return "", fmt.Errorf("no streams found")
+	}
+
+	// First stream (usually video)
+	stream, ok := streams[0].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("invalid stream format")
+	}
+
+	aspectRatio, ok := stream["display_aspect_ratio"].(string)
+	if !ok {
+		return "", fmt.Errorf("no streams found")
+	}
+	return aspectRatio, nil
 }
